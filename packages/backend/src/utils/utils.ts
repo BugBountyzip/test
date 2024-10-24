@@ -59,7 +59,6 @@ export function parseRequest(requestString: string): Record<string, any> {
     request["headers"] = parseHeaders(headerLines);
     request["body"] = lines.join("\r\n");
 
-    // Validate required fields
     if (!request.method || !request.uri) {
       throw new Error('Missing required request fields');
     }
@@ -111,21 +110,15 @@ export function parseResponse(responseString: string): Record<string, any> {
 export function parseHeaders(headerLines: string[]): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const line of headerLines) {
-    if (!line.includes(':')) {
-      continue;
-    }
+    if (!line.includes(':')) continue;
     const parts = line.split(":");
     const key = parts.shift()?.trim() || "";
-    if (key) {
-      headers[key.toLowerCase()] = parts.join(":").trim();
-    }
+    if (key) headers[key.toLowerCase()] = parts.join(":").trim();
   }
   return headers;
 }
 
-export function parseStatusLine(
-  statusLine: string
-): Record<string, string | undefined> {
+export function parseStatusLine(statusLine: string): Record<string, string | undefined> {
   const parts = statusLine.match(/^(.+) ([0-9]{3}) (.*)$/);
   const parsed: Record<string, string | undefined> = {};
 
@@ -140,9 +133,7 @@ export function parseStatusLine(
   return parsed;
 }
 
-export function parseRequestLine(
-  requestLineString: string
-): Record<string, string | undefined> {
+export function parseRequestLine(requestLineString: string): Record<string, string | undefined> {
   const parts = requestLineString.trim().split(/\s+/);
   const parsed: Record<string, string | undefined> = {};
 
@@ -177,8 +168,7 @@ export function validateTemplate(template: any): {
 
   if (!/^[a-zA-Z0-9-]+$/.test(template.id)) {
     return {
-      message:
-        "Template ID must only contain alphanumeric characters and dashes",
+      message: "Template ID must only contain alphanumeric characters and dashes",
       valid: false,
     };
   }
