@@ -17,7 +17,6 @@ export function getTemplateResults(
 ): Result<TemplateResult[]> {
   const scanStore = ScanStore.get();
   const scan = scanStore.getScan(scanID);
-
   if (!scan) return { kind: "Error", error: "Scan not found" };
   return { kind: "Success", value: scan.Results || [] };
 }
@@ -29,10 +28,8 @@ export const getTemplateResult = (
 ): Result<TemplateResult> => {
   const scanStore = ScanStore.get();
   const scan = scanStore.getScan(scanID);
-  
   if (!scan) return { kind: "Error", error: "Scan not found" };
   const templateResult = scan.Results.find((result) => result.ID === templateResultID);
-  
   if (!templateResult) return { kind: "Error", error: "Template result not found" };
   return { kind: "Success", value: templateResult };
 };
@@ -48,7 +45,6 @@ export const getScan = (
 ): Result<Omit<Scan, "Results">> => {
   const scanStore = ScanStore.get();
   const scan = scanStore.getScan(scanID);
-
   if (scan) return { kind: "Success", value: scan };
   return { kind: "Error", error: "Scan not found" };
 };
@@ -64,7 +60,6 @@ export const addScan = async (
   target: ScanTarget
 ): Promise<Result<Scan>> => {
   try {
-    
     if (target.request) {
       try {
         parseRequest(target.request);
@@ -97,7 +92,6 @@ export const deleteScan = (sdk: CaidoBackendSDK, id: number): Result<void> => {
     const scanStore = ScanStore.get();
     cancelScan(sdk, id);
     scanStore.deleteScan(id);
-
     sdk.api.send("scans:deleted", id);
     return { kind: "Success", value: undefined };
   } catch (error) {
@@ -113,10 +107,7 @@ export const updateScan = (
   try {
     const scanStore = ScanStore.get();
     const scan = scanStore.updateScan(id, fields);
-    if (!scan) {
-      return { kind: "Error", error: "Scan not found" };
-    }
-
+    if (!scan) return { kind: "Error", error: "Scan not found" };
     sdk.api.send("scans:updated", id, fields);
     return { kind: "Success", value: scan };
   } catch (error) {
@@ -135,7 +126,6 @@ export const runScan = async (
 
   if (!scan) return { kind: "Error", error: "Scan not found" };
 
-  // Validate request format
   try {
     if (scan.Target && scan.Target.request) {
       parseRequest(scan.Target.request);
@@ -153,61 +143,31 @@ export const runScan = async (
     sdk.api.send("scans:updated", scan.ID, { State: "Running" });
 
     timeoutHandler = setTimeout(() => {
-      sdk.console.log(
-        `Scan ${scan.ID} timed out after ${settings.scanTimeout}ms`
-      );
-
-      scanStore.updateScan(scan.ID, { 
-        State: "Timed Out",
-        finishedAt: new Date()
-      });
-      sdk.api.send("scans:updated", scan.ID, { 
-        State: "Timed Out",
-        finishedAt: new Date()
-      });
+      sdk.console.log(`Scan ${scan.ID} timed out after ${settings.scanTimeout}ms`);
+      scanStore.updateScan(scan.ID, { State: "Timed Out", finishedAt: new Date() });
+      sdk.api.send("scans:updated", scan.ID, { State: "Timed Out", finishedAt: new Date() });
     }, settings.scanTimeout);
 
     await runScanWorker(sdk, scan);
 
-    if (timeoutHandler) {
-      clearTimeout(timeoutHandler);
-    }
+    if (timeoutHandler) clearTimeout(timeoutHandler);
 
     const finishedAt = new Date();
-    scanStore.updateScan(scan.ID, { 
-      State: "Completed",
-      finishedAt 
-    });
-    sdk.api.send("scans:updated", scan.ID, { 
-      State: "Completed",
-      finishedAt 
-    });
+    scanStore.updateScan(scan.ID, { State: "Completed", finishedAt });
+    sdk.api.send("scans:updated", scan.ID, { State: "Completed", finishedAt });
 
     return { kind: "Success", value: scan };
-
   } catch (error) {
-    if (timeoutHandler) {
-      clearTimeout(timeoutHandler);
-    }
-
-    sdk.console.log(`Scan error: ${error.message || error}`);
+    if (timeoutHandler) clearTimeout(timeoutHandler);
     
+    sdk.console.log(`Scan error: ${error.message || error}`);
     const finishedAt = new Date();
-    scanStore.updateScan(scan.ID, { 
-      State: "Failed",
-      finishedAt,
-      error: error.message || "Unknown error during scan execution"
-    });
-    sdk.api.send("scans:updated", scan.ID, { 
-      State: "Failed",
-      finishedAt,
-      error: error.message || "Unknown error during scan execution"
-    });
+    const errorMessage = error.message || "Unknown error during scan execution";
+    
+    scanStore.updateScan(scan.ID, { State: "Failed", finishedAt, error: errorMessage });
+    sdk.api.send("scans:updated", scan.ID, { State: "Failed", finishedAt, error: errorMessage });
 
-    return { 
-      kind: "Error", 
-      error: `Scan failed: ${error.message || "Unknown error"}` 
-    };
+    return { kind: "Error", error: `Scan failed: ${errorMessage}` };
   }
 };
 
@@ -218,14 +178,9 @@ export const reRunScan = async (
   try {
     const scanStore = ScanStore.get();
     const scan = scanStore.getScan(scanID);
-
     if (!scan) return { kind: "Error", error: "Scan not found" };
-
     const newScan = await addScan(sdk, scan.Target);
-    if (newScan.kind === "Error") {
-      return newScan;
-    }
-
+    if (newScan.kind === "Error") return newScan;
     return await runScan(sdk, newScan.value.ID);
   } catch (error) {
     return { kind: "Error", error: `Failed to rerun scan: ${error.message}` };
@@ -236,13 +191,11 @@ export const clearScans = (sdk: CaidoBackendSDK): Result<void> => {
   try {
     const scanStore = ScanStore.get();
     const scans = scanStore.getScans();
-    
     scans.forEach((scan) => {
       if (scan.State === "Running") {
         cancelScan(sdk, scan.ID);
       }
     });
-
     scanStore.clearScans();
     sdk.api.send("scans:cleared");
     return { kind: "Success", value: undefined };
@@ -251,4 +204,37 @@ export const clearScans = (sdk: CaidoBackendSDK): Result<void> => {
   }
 };
 
-export const cancelScan = (sdk: CaidoBackendSDK
+export const cancelScan = (sdk: CaidoBackendSDK, id: number): Result<Scan> => {
+  try {
+    const scanStore = ScanStore.get();
+    const scan = scanStore.getScan(id);
+
+    if (!scan) {
+      return { kind: "Error", error: "Scan not found" };
+    }
+
+    if (scan.State === "Running") {
+      const updatedScan = scanStore.updateScan(id, { 
+        State: "Cancelled",
+        finishedAt: new Date()
+      });
+      
+      if (!updatedScan) {
+        return { kind: "Error", error: "Failed to update scan state" };
+      }
+      
+      sdk.api.send("scans:updated", id, { 
+        State: "Cancelled",
+        finishedAt: new Date()
+      });
+      return { kind: "Success", value: updatedScan };
+    }
+
+    return { kind: "Success", value: scan };
+  } catch (error) {
+    return { 
+      kind: "Error", 
+      error: `Failed to cancel scan: ${error.message}` 
+    };
+  }
+};
