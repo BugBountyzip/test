@@ -9,6 +9,7 @@ import { ScanStore } from "../stores/scans";
 import { SettingsStore } from "../stores/settings";
 import { runScanWorker } from "../services/scanner";
 import { CaidoBackendSDK } from "@/types";
+import { parseRequest } from "../utils/utils";
 
 export function getTemplateResults(
   sdk: SDK,
@@ -55,7 +56,6 @@ export const getScan = (
 const getHighestId = (): number => {
   const scanStore = ScanStore.get();
   const scans = scanStore.getScans();
-
   return scans.reduce((maxId, scan) => Math.max(maxId, scan.ID), 0);
 }
 
@@ -63,29 +63,46 @@ export const addScan = async (
   sdk: CaidoBackendSDK,
   target: ScanTarget
 ): Promise<Result<Scan>> => {
-  const scanStore = ScanStore.get();
-  const nextID = getHighestId() + 1;
+  try {
+    
+    if (target.request) {
+      try {
+        parseRequest(target.request);
+      } catch (error) {
+        return { kind: "Error", error: `Invalid request format: ${error.message}` };
+      }
+    }
 
-  const scan: Scan = {
-    ID: nextID,
-    State: "Running",
-    Target: target,
-    startedAt: new Date(),
-    Results: [],
-  };
+    const scanStore = ScanStore.get();
+    const nextID = getHighestId() + 1;
 
-  scanStore.addScan(scan);
-  sdk.api.send("scans:created", scan);
-  return { kind: "Success", value: scan };
+    const scan: Scan = {
+      ID: nextID,
+      State: "Running",
+      Target: target,
+      startedAt: new Date(),
+      Results: [],
+    };
+
+    scanStore.addScan(scan);
+    sdk.api.send("scans:created", scan);
+    return { kind: "Success", value: scan };
+  } catch (error) {
+    return { kind: "Error", error: `Failed to add scan: ${error.message}` };
+  }
 };
 
 export const deleteScan = (sdk: CaidoBackendSDK, id: number): Result<void> => {
-  const scanStore = ScanStore.get();
-  cancelScan(sdk, id);
-  scanStore.deleteScan(id);
+  try {
+    const scanStore = ScanStore.get();
+    cancelScan(sdk, id);
+    scanStore.deleteScan(id);
 
-  sdk.api.send("scans:deleted", id);
-  return { kind: "Success", value: undefined };
+    sdk.api.send("scans:deleted", id);
+    return { kind: "Success", value: undefined };
+  } catch (error) {
+    return { kind: "Error", error: `Failed to delete scan: ${error.message}` };
+  }
 };
 
 export const updateScan = (
@@ -93,43 +110,18 @@ export const updateScan = (
   id: number,
   fields: Partial<Scan>
 ): Result<Scan> => {
-  const scanStore = ScanStore.get();
-  const scan = scanStore.updateScan(id, fields);
-  sdk.api.send("scans:updated", id, fields);
-
-  if (scan) return { kind: "Success", value: scan };
-  return { kind: "Error", error: "Scan not found" };
-};
-
-export const reRunScan = async (
-  sdk: SDK,
-  scanID: number
-): Promise<Result<Scan>> => {
-  const scanStore = ScanStore.get();
-  const scan = scanStore.getScan(scanID);
-
-  if (!scan) return { kind: "Error", error: "Scan not found" };
-
-  const newScan = await addScan(sdk, scan.Target);
-  if (newScan.kind === "Error") {
-    return newScan;
-  }
-
-  return await runScan(sdk, newScan.value.ID);
-};
-
-export const clearScans = (sdk: CaidoBackendSDK): Result<void> => {
-  const scanStore = ScanStore.get();
-  const scans = scanStore.getScans();
-  scans.forEach((scan) => {
-    if (scan.State === "Running") {
-      cancelScan(sdk, scan.ID);
+  try {
+    const scanStore = ScanStore.get();
+    const scan = scanStore.updateScan(id, fields);
+    if (!scan) {
+      return { kind: "Error", error: "Scan not found" };
     }
-  });
 
-  scanStore.clearScans();
-  sdk.api.send("scans:cleared");
-  return { kind: "Success", value: undefined };
+    sdk.api.send("scans:updated", id, fields);
+    return { kind: "Success", value: scan };
+  } catch (error) {
+    return { kind: "Error", error: `Failed to update scan: ${error.message}` };
+  }
 };
 
 export const runScan = async (
@@ -138,60 +130,125 @@ export const runScan = async (
 ): Promise<Result<Scan>> => {
   const scanStore = ScanStore.get();
   const scan = scanStore.getScan(scanID);
-
   const settingsStore = SettingsStore.get();
   const settings = settingsStore.getSettings();
 
   if (!scan) return { kind: "Error", error: "Scan not found" };
 
-  scanStore.updateScan(scan.ID, { State: "Running" });
-  sdk.api.send("scans:updated", scan.ID, { State: "Running" });
+  // Validate request format
+  try {
+    if (scan.Target && scan.Target.request) {
+      parseRequest(scan.Target.request);
+    } else {
+      throw new Error("Invalid scan target: Missing request data");
+    }
+  } catch (error) {
+    return { kind: "Error", error: `Invalid request format: ${error.message}` };
+  }
 
-  let timeout = setTimeout(() => {
-    sdk.console.log(
-      "Scan " + scan.ID + " timed out after " + settings.scanTimeout + "ms"
-    );
+  let timeoutHandler: NodeJS.Timeout | null = null;
 
-    scanStore.updateScan(scan.ID, { State: "Timed Out" });
-    sdk.api.send("scans:updated", scan.ID, { State: "Timed Out" });
-  }, settings.scanTimeout);
+  try {
+    scanStore.updateScan(scan.ID, { State: "Running" });
+    sdk.api.send("scans:updated", scan.ID, { State: "Running" });
 
-  runScanWorker(sdk, scan)
-    .catch((error) => {
-      sdk.console.log(`Error running scan: ${error}`);
+    timeoutHandler = setTimeout(() => {
+      sdk.console.log(
+        `Scan ${scan.ID} timed out after ${settings.scanTimeout}ms`
+      );
 
-      scanStore.updateScan(scan.ID, { State: "Failed" });
-      sdk.api.send("scans:updated", scan.ID, { State: "Failed" });
-    })
-    .finally(() => {
-      const finishedAt = new Date();
+      scanStore.updateScan(scan.ID, { 
+        State: "Timed Out",
+        finishedAt: new Date()
+      });
+      sdk.api.send("scans:updated", scan.ID, { 
+        State: "Timed Out",
+        finishedAt: new Date()
+      });
+    }, settings.scanTimeout);
 
-      scanStore.updateScan(scan.ID, { finishedAt });
-      sdk.api.send("scans:updated", scan.ID, { finishedAt });
+    await runScanWorker(sdk, scan);
 
-      clearTimeout(timeout);
+    if (timeoutHandler) {
+      clearTimeout(timeoutHandler);
+    }
+
+    const finishedAt = new Date();
+    scanStore.updateScan(scan.ID, { 
+      State: "Completed",
+      finishedAt 
+    });
+    sdk.api.send("scans:updated", scan.ID, { 
+      State: "Completed",
+      finishedAt 
     });
 
-  return { kind: "Success", value: scan };
-};
+    return { kind: "Success", value: scan };
 
-export const cancelScan = (sdk: CaidoBackendSDK, id: number): Result<Scan> => {
-  const scanStore = ScanStore.get();
-  const scan = scanStore.getScan(id);
-
-  if (!scan) {
-    return { kind: "Error", error: "Scan not found" };
-  }
-
-  if (scan.State === "Running") {
-    const updatedScan = scanStore.updateScan(id, { State: "Cancelled" });
-    if (!updatedScan) {
-      return { kind: "Error", error: "Scan not found" };
+  } catch (error) {
+    if (timeoutHandler) {
+      clearTimeout(timeoutHandler);
     }
-    
-    sdk.api.send("scans:updated", id, { State: "Cancelled" });
-    return { kind: "Success", value: updatedScan };
-  }
 
-  return { kind: "Success", value: scan };
+    sdk.console.log(`Scan error: ${error.message || error}`);
+    
+    const finishedAt = new Date();
+    scanStore.updateScan(scan.ID, { 
+      State: "Failed",
+      finishedAt,
+      error: error.message || "Unknown error during scan execution"
+    });
+    sdk.api.send("scans:updated", scan.ID, { 
+      State: "Failed",
+      finishedAt,
+      error: error.message || "Unknown error during scan execution"
+    });
+
+    return { 
+      kind: "Error", 
+      error: `Scan failed: ${error.message || "Unknown error"}` 
+    };
+  }
 };
+
+export const reRunScan = async (
+  sdk: SDK,
+  scanID: number
+): Promise<Result<Scan>> => {
+  try {
+    const scanStore = ScanStore.get();
+    const scan = scanStore.getScan(scanID);
+
+    if (!scan) return { kind: "Error", error: "Scan not found" };
+
+    const newScan = await addScan(sdk, scan.Target);
+    if (newScan.kind === "Error") {
+      return newScan;
+    }
+
+    return await runScan(sdk, newScan.value.ID);
+  } catch (error) {
+    return { kind: "Error", error: `Failed to rerun scan: ${error.message}` };
+  }
+};
+
+export const clearScans = (sdk: CaidoBackendSDK): Result<void> => {
+  try {
+    const scanStore = ScanStore.get();
+    const scans = scanStore.getScans();
+    
+    scans.forEach((scan) => {
+      if (scan.State === "Running") {
+        cancelScan(sdk, scan.ID);
+      }
+    });
+
+    scanStore.clearScans();
+    sdk.api.send("scans:cleared");
+    return { kind: "Success", value: undefined };
+  } catch (error) {
+    return { kind: "Error", error: `Failed to clear scans: ${error.message}` };
+  }
+};
+
+export const cancelScan = (sdk: CaidoBackendSDK
