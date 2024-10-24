@@ -28,54 +28,97 @@ export function getTemplateDir(sdk: SDK): string {
 }
 
 export function parseRequest(requestString: string): Record<string, any> {
-  const request: Record<string, any> = {};
-  const lines = requestString.split(/\r?\n/);
+  try {
+    if (!requestString || typeof requestString !== 'string') {
+      throw new Error('Invalid request string provided');
+    }
 
-  const parsedRequestLine = parseRequestLine(lines.shift() || "");
-  request["method"] = parsedRequestLine["method"];
-  request["uri"] = parsedRequestLine["uri"];
+    const request: Record<string, any> = {};
+    const lines = requestString.split(/\r?\n/);
 
-  const headerLines: string[] = [];
-  while (lines.length > 0) {
-    const line = lines.shift();
-    if (line === "") break;
-    headerLines.push(line || "");
+    if (lines.length === 0) {
+      throw new Error('Empty request string');
+    }
+
+    const parsedRequestLine = parseRequestLine(lines.shift() || "");
+    if (!parsedRequestLine.method || !parsedRequestLine.uri) {
+      throw new Error('Invalid request line format');
+    }
+
+    request["method"] = parsedRequestLine["method"];
+    request["uri"] = parsedRequestLine["uri"];
+    request["protocol"] = parsedRequestLine["protocol"] || "HTTP/1.1";
+
+    const headerLines: string[] = [];
+    while (lines.length > 0) {
+      const line = lines.shift();
+      if (line === "") break;
+      if (line) headerLines.push(line);
+    }
+
+    request["headers"] = parseHeaders(headerLines);
+    request["body"] = lines.join("\r\n");
+
+    // Validate required fields
+    if (!request.method || !request.uri) {
+      throw new Error('Missing required request fields');
+    }
+
+    return request;
+  } catch (error) {
+    throw new Error(`Request parsing failed: ${error.message}`);
   }
-
-  request["headers"] = parseHeaders(headerLines);
-  request["body"] = lines.join("\r\n");
-
-  return request;
 }
 
 export function parseResponse(responseString: string): Record<string, any> {
-  const response: Record<string, any> = {};
-  const lines = responseString.split(/\r?\n/);
+  try {
+    if (!responseString || typeof responseString !== 'string') {
+      throw new Error('Invalid response string provided');
+    }
 
-  const parsedStatusLine = parseStatusLine(lines.shift() || "");
-  response["protocolVersion"] = parsedStatusLine["protocol"];
-  response["statusCode"] = parsedStatusLine["statusCode"];
-  response["statusMessage"] = parsedStatusLine["statusMessage"];
+    const response: Record<string, any> = {};
+    const lines = responseString.split(/\r?\n/);
 
-  const headerLines: string[] = [];
-  while (lines.length > 0) {
-    const line = lines.shift();
-    if (line === "") break;
-    headerLines.push(line || "");
+    if (lines.length === 0) {
+      throw new Error('Empty response string');
+    }
+
+    const parsedStatusLine = parseStatusLine(lines.shift() || "");
+    if (!parsedStatusLine.statusCode) {
+      throw new Error('Invalid status line format');
+    }
+
+    response["protocolVersion"] = parsedStatusLine["protocol"] || "HTTP/1.1";
+    response["statusCode"] = parsedStatusLine["statusCode"];
+    response["statusMessage"] = parsedStatusLine["statusMessage"];
+
+    const headerLines: string[] = [];
+    while (lines.length > 0) {
+      const line = lines.shift();
+      if (line === "") break;
+      if (line) headerLines.push(line);
+    }
+
+    response["headers"] = parseHeaders(headerLines);
+    response["body"] = lines.join("\r\n");
+
+    return response;
+  } catch (error) {
+    throw new Error(`Response parsing failed: ${error.message}`);
   }
-
-  response["headers"] = parseHeaders(headerLines);
-  response["body"] = lines.join("\r\n");
-
-  return response;
 }
 
 export function parseHeaders(headerLines: string[]): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const line of headerLines) {
+    if (!line.includes(':')) {
+      continue;
+    }
     const parts = line.split(":");
     const key = parts.shift()?.trim() || "";
-    headers[key] = parts.join(":").trim();
+    if (key) {
+      headers[key.toLowerCase()] = parts.join(":").trim();
+    }
   }
   return headers;
 }
@@ -90,6 +133,8 @@ export function parseStatusLine(
     parsed["protocol"] = parts[1];
     parsed["statusCode"] = parts[2];
     parsed["statusMessage"] = parts[3];
+  } else {
+    throw new Error('Invalid status line format');
   }
 
   return parsed;
@@ -98,12 +143,16 @@ export function parseStatusLine(
 export function parseRequestLine(
   requestLineString: string
 ): Record<string, string | undefined> {
-  const parts = requestLineString.split(" ");
+  const parts = requestLineString.trim().split(/\s+/);
   const parsed: Record<string, string | undefined> = {};
 
-  parsed["method"] = parts[0];
+  if (parts.length < 2) {
+    throw new Error('Invalid request line format');
+  }
+
+  parsed["method"] = parts[0].toUpperCase();
   parsed["uri"] = parts[1];
-  parsed["protocol"] = parts[2];
+  parsed["protocol"] = parts[2] || "HTTP/1.1";
 
   return parsed;
 }
